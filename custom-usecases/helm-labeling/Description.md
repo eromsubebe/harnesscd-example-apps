@@ -42,6 +42,8 @@ This example demonstrates how to use Helm command flags in Harness to apply labe
 
 The service uses `NativeHelm` deployment type (not `Kubernetes`) to ensure Helm command flags are properly applied.
 
+**For complete service YAML, refer to [service.yaml](./service.yaml)**
+
 ### Key Configuration
 
 ```yaml
