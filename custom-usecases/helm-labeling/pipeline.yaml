@@ -1,0 +1,292 @@
+pipeline:
+  name: Helm Labeling Demo
+  identifier: helm_labeling_demo
+  projectIdentifier: <+input>
+  orgIdentifier: <+input>
+  tags:
+    example: helm-labeling
+    category: custom-usecase
+  stages:
+    - stage:
+        name: Deploy with Labels
+        identifier: deploy_with_labels
+        description: Deploy Helm chart with both release and resource labels
+        type: Deployment
+        spec:
+          deploymentType: NativeHelm
+          service:
+            serviceRef: <+input>
+            serviceInputs:
+              serviceDefinition:
+                type: NativeHelm
+                spec:
+                  manifests:
+                    - manifest:
+                        identifier: nginx_helm_chart
+                        type: HelmChart
+                        spec:
+                          store:
+                            type: Github
+                            spec:
+                              connectorRef: <+input>
+                              gitFetchType: Branch
+                              folderPath: helm-labeling
+                              branch: <+input>
+                          skipResourceVersioning: false
+                          helmVersion: V3
+                          commandFlags:
+                            - commandType: Install
+                              flag: "--labels team=<+pipeline.variables.team>,env=<+env.name>,deployed-by=harness --set commonLabels.team=<+pipeline.variables.team> --set commonLabels.env=<+env.name> --set commonLabels.owner=<+pipeline.variables.owner> --set-string commonLabels.cost-center=<+pipeline.variables.cost_center>"
+
+                            - commandType: Upgrade
+                              flag: "--labels team=<+pipeline.variables.team>,env=<+env.name>,deployed-by=harness --set commonLabels.team=<+pipeline.variables.team> --set commonLabels.env=<+env.name> --set commonLabels.owner=<+pipeline.variables.owner> --set-string commonLabels.cost-center=<+pipeline.variables.cost_center>"
+          environment:
+            environmentRef: <+input>
+            deployToAll: false
+            infrastructureDefinitions:
+              - identifier: <+input>
+          execution:
+            steps:
+              - step:
+                  name: Helm Deployment
+                  identifier: helmDeployment
+                  type: HelmDeploy
+                  timeout: 10m
+                  spec:
+                    skipDryRun: false
+
+              - step:
+                  name: Verify Helm Release Labels
+                  identifier: verify_helm_labels
+                  type: ShellScript
+                  timeout: 5m
+                  spec:
+                    shell: Bash
+                    onDelegate: true
+                    source:
+                      type: Inline
+                      spec:
+                        script: |-
+                          #!/bin/bash
+                          set -e
+
+                          echo "========================================="
+                          echo "HELM RELEASE LABELS VERIFICATION"
+                          echo "========================================="
+
+                          NAMESPACE="<+infra.namespace>"
+                          TEAM="<+pipeline.variables.team>"
+
+                          echo -e "\n1. List all Helm releases with team=$TEAM label:"
+                          helm list -n $NAMESPACE --selector team=$TEAM
+
+                          echo -e "\n2. List releases deployed by Harness:"
+                          helm list -n $NAMESPACE --selector deployed-by=harness
+
+                          echo -e "\n3. Get release metadata:"
+                          helm get metadata <+service.name> -n $NAMESPACE || echo "Note: Metadata command requires Helm 3.1+"
+
+                          echo -e "\n4. Query by multiple labels:"
+                          helm list -n $NAMESPACE --selector "team=$TEAM,env=<+env.name>"
+
+                          echo -e "\n✅ Helm release labels verified!"
+                    environmentVariables: []
+                    outputVariables: []
+
+              - step:
+                  name: Verify Kubernetes Resource Labels
+                  identifier: verify_k8s_labels
+                  type: ShellScript
+                  timeout: 5m
+                  spec:
+                    shell: Bash
+                    onDelegate: true
+                    source:
+                      type: Inline
+                      spec:
+                        script: |-
+                          #!/bin/bash
+                          set -e
+
+                          echo "========================================="
+                          echo "KUBERNETES RESOURCE LABELS VERIFICATION"
+                          echo "========================================="
+
+                          NAMESPACE="<+infra.namespace>"
+                          TEAM="<+pipeline.variables.team>"
+                          OWNER="<+pipeline.variables.owner>"
+                          COST_CENTER="<+pipeline.variables.cost_center>"
+
+                          echo -e "\n1. Pods with team=$TEAM label:"
+                          kubectl get pods -n $NAMESPACE -l team=$TEAM --show-labels
+
+                          echo -e "\n2. All resources with owner=$OWNER label:"
+                          kubectl get all -n $NAMESPACE -l owner=$OWNER
+
+                          echo -e "\n3. Resources for cost-center=$COST_CENTER:"
+                          kubectl get all -n $NAMESPACE -l cost-center=$COST_CENTER -o wide
+
+                          echo -e "\n4. Detailed pod labels (JSON):"
+                          POD_LABELS=$(kubectl get pods -n $NAMESPACE -l team=$TEAM -o jsonpath='{.items[0].metadata.labels}' 2>/dev/null || echo "{}")
+                          echo "$POD_LABELS" | jq '.'
+
+                          # Verify required labels exist
+                          echo -e "\n5. Validating required labels..."
+
+                          if echo "$POD_LABELS" | jq -e ".team == \"$TEAM\"" > /dev/null 2>&1; then
+                            echo "✅ team=$TEAM label found"
+                          else
+                            echo "❌ team label missing or incorrect"
+                            exit 1
+                          fi
+
+                          if echo "$POD_LABELS" | jq -e ".owner == \"$OWNER\"" > /dev/null 2>&1; then
+                            echo "✅ owner=$OWNER label found"
+                          else
+                            echo "❌ owner label missing or incorrect"
+                            exit 1
+                          fi
+
+                          if echo "$POD_LABELS" | jq -e ".[\"cost-center\"] == \"$COST_CENTER\"" > /dev/null 2>&1; then
+                            echo "✅ cost-center=$COST_CENTER label found"
+                          else
+                            echo "❌ cost-center label missing or incorrect"
+                            exit 1
+                          fi
+
+                          echo -e "\n✅ All Kubernetes resource labels verified!"
+                    environmentVariables: []
+                    outputVariables: []
+
+              - step:
+                  name: Label Usage Examples
+                  identifier: label_usage_examples
+                  type: ShellScript
+                  timeout: 5m
+                  spec:
+                    shell: Bash
+                    onDelegate: true
+                    source:
+                      type: Inline
+                      spec:
+                        script: |-
+                          #!/bin/bash
+
+                          NAMESPACE="<+infra.namespace>"
+                          TEAM="<+pipeline.variables.team>"
+                          OWNER="<+pipeline.variables.owner>"
+                          COST_CENTER="<+pipeline.variables.cost_center>"
+
+                          cat << EOF
+
+                          ========================================
+                          LABEL USAGE EXAMPLES
+                          ========================================
+
+                          Use these commands to query resources by labels:
+
+                          ## Helm Release Queries (Option 1)
+
+                          # List all releases for team '$TEAM'
+                          helm list --all-namespaces --selector team=$TEAM
+
+                          # List releases by environment
+                          helm list --all-namespaces --selector env=<+env.name>
+
+                          # List releases deployed by Harness
+                          helm list --all-namespaces --selector deployed-by=harness
+
+                          # Combined selectors
+                          helm list --all-namespaces --selector "team=$TEAM,env=<+env.name>"
+
+                          ## Kubernetes Resource Queries (Option 2)
+
+                          # Get all pods for team '$TEAM'
+                          kubectl get pods --all-namespaces -l team=$TEAM
+
+                          # Get all resources owned by '$OWNER'
+                          kubectl get all --all-namespaces -l owner=$OWNER
+
+                          # Get resources for cost-center '$COST_CENTER'
+                          kubectl get all --all-namespaces -l cost-center=$COST_CENTER
+
+                          # Get pods by environment
+                          kubectl get pods --all-namespaces -l env=<+env.name>
+
+                          ## Cost Allocation
+
+                          # Export cost-center resources to JSON
+                          kubectl get pods --all-namespaces -l cost-center=$COST_CENTER -o json > cost-report.json
+
+                          # Calculate total resource requests for cost-center
+                          kubectl get pods --all-namespaces -l cost-center=$COST_CENTER -o json | \
+                            jq '[.items[].spec.containers[].resources.requests] | add'
+
+                          ## Monitoring Integration
+
+                          # Get pods with resource usage
+                          kubectl top pods --all-namespaces -l team=$TEAM
+
+                          # Prometheus query example
+                          # container_cpu_usage_seconds_total{pod=~".*",team="$TEAM"}
+
+                          ## Network Policies (Example)
+
+                          # Allow traffic from pods with team=$TEAM label
+                          # podSelector:
+                          #   matchLabels:
+                          #     team: $TEAM
+
+                          ========================================
+                          ✅ Both Helm release and K8s resource labels are working!
+                          ========================================
+
+                          Labels Applied:
+                          - team: $TEAM
+                          - env: <+env.name>
+                          - owner: $OWNER
+                          - cost-center: $COST_CENTER
+                          - deployed-by: harness
+
+                          Use Cases Enabled:
+                          ✅ Helm release tracking by team/env/owner
+                          ✅ Kubernetes resource filtering by labels
+                          ✅ Cost allocation by cost-center
+                          ✅ Monitoring and alerting by team
+                          ✅ Pod selection for network policies
+                          ✅ Audit and compliance reporting
+
+                          EOF
+                    environmentVariables: []
+                    outputVariables: []
+
+            rollbackSteps:
+              - step:
+                  name: Helm Rollback
+                  identifier: helmRollback
+                  type: HelmRollback
+                  timeout: 10m
+                  spec: {}
+        tags: {}
+        failureStrategies:
+          - onFailure:
+              errors:
+                - AllErrors
+              action:
+                type: StageRollback
+  variables:
+    - name: team
+      type: String
+      description: Team name for labeling
+      required: true
+      value: platform
+    - name: owner
+      type: String
+      description: Organization or customer name
+      required: true
+      value: myorg
+    - name: cost_center
+      type: String
+      description: Cost center for resource allocation
+      required: true
+      value: "1234"
