@@ -1,0 +1,43 @@
+template:
+  name: jfrog_remote_workspace-2
+  identifier: jfrog_remote_workspace2
+  versionLabel: v1
+  type: Step
+  projectIdentifier: Krishika_CD_Samples
+  orgIdentifier: default
+  tags: {}
+  spec:
+    type: Run
+    spec:
+      shell: Sh
+      command: |-
+        set -e
+
+        export TF_TOKEN_harness_jfrog_io="<+secrets.getValue("harness_jfrog_identity_token")>"
+
+        WORKSPACE_NAME=<+pipeline.variables.WORKSPACE_SUFFIX>
+
+        echo " Cleaning previous .terraform setup..."
+        rm -rf .terraform
+
+        echo " Running terraform init..."
+        # terraform init -reconfigure
+
+        printf "1\n" | terraform init -reconfigure
+
+        echo " Checking for workspace '${WORKSPACE_NAME}'..."
+
+        # Check if the workspace exists
+        if terraform workspace list | grep -q "${WORKSPACE_NAME}"; then
+          echo " Workspace '${WORKSPACE_NAME}' already exists. Selecting it..."
+          terraform workspace select "${WORKSPACE_NAME}"
+        else
+          echo " Workspace '${WORKSPACE_NAME}' not found. Creating it..."
+          terraform workspace new "${WORKSPACE_NAME}"
+        fi
+
+        echo " Running terraform plan in workspace: ${WORKSPACE_NAME}..."
+        terraform plan
+
+        echo " Applying changes..."
+        terraform apply -auto-approve

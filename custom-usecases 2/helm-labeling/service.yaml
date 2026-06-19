@@ -1,0 +1,33 @@
+service:
+  name: nginx-with-labels
+  identifier: nginx_with_labels
+  orgIdentifier: <+input>
+  projectIdentifier: <+input>
+  serviceDefinition:
+    type: NativeHelm
+    spec:
+      manifests:
+        - manifest:
+            identifier: nginx_helm_chart
+            type: HelmChart
+            spec:
+              store:
+                type: Github
+                spec:
+                  connectorRef: <+input>
+                  gitFetchType: Branch
+                  folderPath: helm-labeling
+                  branch: <+input>
+              skipResourceVersioning: false
+              helmVersion: V3
+              commandFlags:
+                # Option 1: Helm Release Labels (stored in Helm release metadata)
+                # Option 2: Kubernetes Resource Labels (applied to pods, deployments, services)
+                # Both flags are combined in a single entry per command type
+
+                - commandType: Install
+                  flag: "--labels team=platform,env=dev,deployed-by=harness --set commonLabels.team=platform --set commonLabels.env=dev --set commonLabels.owner=myorg --set-string commonLabels.cost-center=1234"
+
+                - commandType: Upgrade
+                  flag: "--labels team=platform,env=dev,deployed-by=harness --set commonLabels.team=platform --set commonLabels.env=dev --set commonLabels.owner=myorg --set-string commonLabels.cost-center=1234"
+  gitOpsEnabled: false

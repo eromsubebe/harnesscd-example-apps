@@ -1,0 +1,24 @@
+connector:
+  name: aws-connector
+  identifier: awsconnector
+  description: ""
+  orgIdentifier: default
+  projectIdentifier: default_project
+  type: Aws
+  spec:
+    credential:
+      crossAccountAccess:
+        crossAccountRoleArn: ROLE_ARN
+      type: ManualConfig
+      spec:
+        accessKey: AWS_ACCESS_KEY
+        secretKeyRef: awssecret
+      region: CLOUD_REGION_NAME
+    awsSdkClientBackOffStrategyOverride:
+      type: FixedDelayBackoffStrategy
+      spec:
+        fixedBackoff: 1
+        retryCount: 2
+    delegateSelectors:
+      - DELEGATE_NAME
+    executeOnDelegate: true

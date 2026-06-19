@@ -2,7 +2,13 @@
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
 
+<<<<<<< HEAD
 replicaCount: 4
+||||||| 6746b0d (pt4-ex2 | Change replicaCount from 3 to 2)
+replicaCount: 2
+=======
+replicaCount: 3
+>>>>>>> parent of 6746b0d (pt4-ex2 | Change replicaCount from 3 to 2)
 
 image:
   repository: hekai/gcr.io_heptio-images_ks-guestbook-demo_0.2

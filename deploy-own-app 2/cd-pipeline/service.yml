@@ -1,0 +1,23 @@
+service:
+    name: ownappservice
+    identifier: ownappservice
+    serviceDefinition:
+        type: Kubernetes
+        spec:
+            manifests:
+                - manifest:
+                    identifier: ownapp
+                    type: K8sManifest
+                    spec:
+                      store:
+                        type: Github
+                        spec:
+                            connectorRef: ownappgitconnector
+                            gitFetchType: Branch
+                            paths:
+                                - guestbook/guestbook-ui-deployment.yaml
+                                - guestbook/guestbook-ui-svc.yaml
+                            repoName: harnesscd-example-apps
+                            branch: master
+                        skipResourceVersioning: false
+                        enableDeclarativeRollback: false

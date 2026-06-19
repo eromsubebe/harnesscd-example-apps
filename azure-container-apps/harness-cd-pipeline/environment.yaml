@@ -1,8 +1,0 @@
-environment:
-  name: Azure Container Apps Environment
-  identifier: azure_container_apps_environment
-  description: Environment for Azure Container Apps deployments
-  tags: {}
-  type: PreProduction
-  orgIdentifier: default
-  projectIdentifier: default_project
