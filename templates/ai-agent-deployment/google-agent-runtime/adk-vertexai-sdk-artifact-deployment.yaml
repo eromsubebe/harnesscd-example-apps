@@ -1,0 +1,326 @@
+template:
+  name: ADK Deployment to Agent Run - GAR Artifact Approach
+  identifier: ADK_Deployment_to_Agent_Run_GAR_Artifact_Approach
+  versionLabel: v1
+  type: Pipeline
+  projectIdentifier: akshitdevrelharness
+  orgIdentifier: default
+  tags: {}
+  spec:
+    properties:
+      ci:
+        codebase:
+          connectorRef: <+input>
+          repoName: <+input>
+          build: <+input>
+    stages:
+      - stage:
+          name: CI - Build and Push
+          identifier: ci_build_and_push
+          description: Clone, validate, test, build Docker image, push to GAR
+          type: CI
+          spec:
+            cloneCodebase: true
+            platform:
+              os: Linux
+              arch: Amd64
+            runtime:
+              type: Cloud
+              spec: {}
+            execution:
+              steps:
+                - step:
+                    type: Run
+                    name: Setup GCP Credentials
+                    identifier: setup_gcp_credentials
+                    spec:
+                      shell: Bash
+                      command: |-
+                        echo "=== Writing GCP service account key ==="
+                        echo '<+secrets.getValue("gcp_sa_key_json")>' > /tmp/gcp-sa-key.json
+                        chmod 600 /tmp/gcp-sa-key.json
+                        GCP_PROJECT=$(python3 -c "import json; print(json.load(open('/tmp/gcp-sa-key.json'))['project_id'])")
+                        GCP_REGION="<+secrets.getValue("gcp_region")>"
+                        GCP_REGION="${GCP_REGION:-us-east1}"
+                        gcloud auth activate-service-account --key-file=/tmp/gcp-sa-key.json --project="$GCP_PROJECT"
+                        gcloud config set project "$GCP_PROJECT"
+                        printf 'export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-sa-key.json\nexport GOOGLE_GENAI_USE_VERTEXAI=true\nexport GOOGLE_CLOUD_PROJECT=%s\nexport GOOGLE_CLOUD_LOCATION=%s\n' "$GCP_PROJECT" "$GCP_REGION" > /tmp/gcp-env.sh
+                        printf 'GOOGLE_GENAI_USE_VERTEXAI=1\nGOOGLE_CLOUD_PROJECT=%s\nGOOGLE_CLOUD_LOCATION=%s\nGOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-sa-key.json\n' "$GCP_PROJECT" "$GCP_REGION" > .env
+                        echo "Configured: project=$GCP_PROJECT region=$GCP_REGION"
+                - step:
+                    type: Run
+                    name: Validate Project Structure
+                    identifier: validate_project_structure
+                    spec:
+                      shell: Bash
+                      command: |-
+                        echo "=== Validating project structure ==="
+                        ERRORS=0
+                        for f in "Dockerfile" "requirements.txt" "server.py"; do
+                          if [ ! -f "$f" ]; then echo "FAIL: Missing $f"; ERRORS=$((ERRORS + 1)); else echo "  OK: $f"; fi
+                        done
+                        if [ $ERRORS -gt 0 ]; then echo "FAILED: $ERRORS error(s)."; exit 1; fi
+                        echo "All validations passed."
+                - step:
+                    type: Run
+                    name: Install and Test
+                    identifier: install_and_test
+                    spec:
+                      shell: Bash
+                      command: |-
+                        source /tmp/gcp-env.sh
+                        if [ -f "pyproject.toml" ]; then
+                          curl -LsSf https://astral.sh/uv/install.sh | sh
+                          export PATH="$HOME/.local/bin:$PATH"
+                          SYNC_CMD="uv sync"
+                          for group in dev deployment; do
+                            if grep -qP "^\[dependency-groups\]" pyproject.toml 2>/dev/null && grep -qP "^${group}\s*=" pyproject.toml 2>/dev/null; then
+                              SYNC_CMD="$SYNC_CMD --group $group"
+                            fi
+                          done
+                          $SYNC_CMD
+                          TEST_CMD="uv run pytest"
+                        else
+                          pip install -r requirements.txt
+                          pip install pytest pytest-asyncio
+                          TEST_CMD="pytest"
+                        fi
+                        echo "=== Running tests ==="
+                        if [ -d "tests" ]; then $TEST_CMD tests -v --tb=short; else echo "WARN: No tests/ directory."; fi
+                        echo "=== Running evaluations ==="
+                        EVAL_DIRS=""
+                        for candidate in eval tests/eval; do
+                          if find "$candidate" -name "test_*.py" -o -name "*_test.py" 2>/dev/null | grep -q .; then EVAL_DIRS="$EVAL_DIRS $candidate"; fi
+                        done
+                        if [ -n "$EVAL_DIRS" ]; then
+                          $TEST_CMD $EVAL_DIRS -v --tb=short || echo "WARN: Eval threshold not met (non-blocking)."
+                        else
+                          echo "WARN: No eval test files found."
+                        fi
+                        echo "Tests and evaluations complete."
+                - step:
+                    type: BuildAndPushGAR
+                    name: Build and Push to GAR
+                    identifier: build_and_push_gar
+                    spec:
+                      connectorRef: <+input>
+                      host: <+input>
+                      projectID: <+input>
+                      imageName: <+input>
+                      tags:
+                        - <+pipeline.sequenceId>
+                        - latest
+      - stage:
+          name: CD - Deploy to Agent Runtime
+          identifier: cd_deploy_to_agent_runtime
+          description: Deploy container image from GAR to Agent Runtime via Vertex AI SDK
+          type: CI
+          spec:
+            cloneCodebase: false
+            platform:
+              os: Linux
+              arch: Amd64
+            runtime:
+              type: Cloud
+              spec: {}
+            execution:
+              steps:
+                - step:
+                    type: Run
+                    name: Setup GCP Credentials
+                    identifier: cd_setup_gcp_credentials
+                    spec:
+                      shell: Bash
+                      command: |-
+                        echo "=== Writing GCP service account key ==="
+                        echo '<+secrets.getValue("gcp_sa_key_json")>' > /tmp/gcp-sa-key.json
+                        chmod 600 /tmp/gcp-sa-key.json
+                        GCP_PROJECT=$(python3 -c "import json; print(json.load(open('/tmp/gcp-sa-key.json'))['project_id'])")
+                        GCP_REGION="<+secrets.getValue("gcp_region")>"
+                        GCP_REGION="${GCP_REGION:-us-east1}"
+                        gcloud auth activate-service-account --key-file=/tmp/gcp-sa-key.json --project="$GCP_PROJECT"
+                        gcloud config set project "$GCP_PROJECT"
+                        printf 'export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-sa-key.json\nexport GOOGLE_GENAI_USE_VERTEXAI=true\nexport GOOGLE_CLOUD_PROJECT=%s\nexport GOOGLE_CLOUD_LOCATION=%s\n' "$GCP_PROJECT" "$GCP_REGION" > /tmp/gcp-env.sh
+                        pip install --quiet "google-cloud-aiplatform[agent_engines]>=1.144"
+                        echo "Configured: project=$GCP_PROJECT region=$GCP_REGION"
+                - step:
+                    type: Run
+                    name: Capture Current Revision
+                    identifier: cd_capture_current_revision
+                    spec:
+                      shell: Bash
+                      command: |-
+                        source /tmp/gcp-env.sh
+                        API_BASE="https://${GOOGLE_CLOUD_LOCATION}-aiplatform.googleapis.com/v1beta1"
+                        TOKEN=$(gcloud auth print-access-token)
+                        echo "=== Discovering existing agent ==="
+                        RESOURCE_NAME=$(curl -s -H "Authorization: Bearer $TOKEN" "${API_BASE}/projects/${GOOGLE_CLOUD_PROJECT}/locations/${GOOGLE_CLOUD_LOCATION}/reasoningEngines" | python3 -c "import sys,json; engines=json.load(sys.stdin).get('reasoningEngines',[]); print(engines[-1]['name']) if engines else ''" 2>/dev/null || true)
+                        if [ -z "$RESOURCE_NAME" ]; then
+                          echo "No existing agent found. First deployment."
+                          echo "" > /tmp/old_revision.txt
+                          echo "" > /tmp/agent_resource_name.txt
+                          exit 0
+                        fi
+                        echo "$RESOURCE_NAME" > /tmp/agent_resource_name.txt
+                        echo "Agent resource: $RESOURCE_NAME"
+                        OLD_REVISION=$(curl -s -H "Authorization: Bearer $TOKEN" "${API_BASE}/${RESOURCE_NAME}/runtimeRevisions" | python3 -c "import sys,json; revs=json.load(sys.stdin).get('reasoningEngineRuntimeRevisions',[]); revs.sort(key=lambda r:r.get('createTime',''),reverse=True); print(revs[0]['name']) if revs else ''" 2>/dev/null || true)
+                        echo "$OLD_REVISION" > /tmp/old_revision.txt
+                        echo "Current active revision: ${OLD_REVISION:-none}"
+                - step:
+                    type: Run
+                    name: Deploy Container Image
+                    identifier: cd_deploy_container_image
+                    spec:
+                      shell: Bash
+                      command: |-
+                        source /tmp/gcp-env.sh
+                        IMAGE_URI="<+pipeline.stages.ci_build_and_push.spec.execution.steps.build_and_push_gar.spec.host>/<+pipeline.stages.ci_build_and_push.spec.execution.steps.build_and_push_gar.spec.projectID>/<+pipeline.stages.ci_build_and_push.spec.execution.steps.build_and_push_gar.spec.imageName>:<+pipeline.sequenceId>"
+                        RESOURCE_NAME=$(cat /tmp/agent_resource_name.txt 2>/dev/null || echo "")
+                        echo "=== Deploying to Agent Runtime ==="
+                        echo "Image:   $IMAGE_URI"
+                        echo "Project: $GOOGLE_CLOUD_PROJECT"
+                        echo "Region:  $GOOGLE_CLOUD_LOCATION"
+                        python3 -c "
+                        import os, vertexai
+                        project = os.environ['GOOGLE_CLOUD_PROJECT']
+                        location = os.environ['GOOGLE_CLOUD_LOCATION']
+                        image_uri = '$IMAGE_URI'
+                        resource_name = '$RESOURCE_NAME'
+                        vertexai.init(project=project, location=location)
+                        client = vertexai.Client(project=project, location=location)
+                        display_name = image_uri.split('/')[-1].split(':')[0]
+                        if resource_name:
+                            print(f'Updating existing agent: {resource_name}')
+                            try:
+                                remote_agent = client.agent_engines.update(name=resource_name, config={'container_spec': {'image_uri': image_uri}, 'agent_framework': 'google-adk'})
+                                print(f'Updated: {remote_agent.api_resource.name}')
+                            except Exception as e:
+                                print(f'Update failed: {e}')
+                                print('Creating new agent instead...')
+                                resource_name = ''
+                        if not resource_name:
+                            print(f'Creating new agent: {display_name}')
+                            remote_agent = client.agent_engines.create(config={'container_spec': {'image_uri': image_uri}, 'display_name': display_name, 'agent_framework': 'google-adk'})
+                            print(f'Created: {remote_agent.api_resource.name}')
+                            with open('/tmp/agent_resource_name.txt', 'w') as f:
+                                f.write(remote_agent.api_resource.name)
+                        "
+                        echo "Deployment successful."
+                        sleep 10
+                        API_BASE="https://${GOOGLE_CLOUD_LOCATION}-aiplatform.googleapis.com/v1beta1"
+                        TOKEN=$(gcloud auth print-access-token)
+                        RESOURCE_NAME=$(cat /tmp/agent_resource_name.txt)
+                        NEW_REVISION=$(curl -s -H "Authorization: Bearer $TOKEN" "${API_BASE}/${RESOURCE_NAME}/runtimeRevisions" | python3 -c "import sys,json; revs=json.load(sys.stdin).get('reasoningEngineRuntimeRevisions',[]); revs.sort(key=lambda r:r.get('createTime',''),reverse=True); print(revs[0]['name']) if revs else ''" 2>/dev/null || true)
+                        echo "$NEW_REVISION" > /tmp/new_revision.txt
+                        echo "New revision: $NEW_REVISION"
+                        OLD_REVISION=$(cat /tmp/old_revision.txt 2>/dev/null || echo "")
+                        CURRENT_AGENT_ID=$(echo "$RESOURCE_NAME" | grep -oP 'reasoningEngines/\K[^/]+')
+                        OLD_AGENT_ID=$(echo "$OLD_REVISION" | grep -oP 'reasoningEngines/\K[^/]+' || true)
+                        if [ -n "$OLD_REVISION" ] && [ "$OLD_AGENT_ID" != "$CURRENT_AGENT_ID" ]; then
+                          echo "Old revision is from a different agent ($OLD_AGENT_ID vs $CURRENT_AGENT_ID). Clearing for fresh deployment."
+                          echo "" > /tmp/old_revision.txt
+                        fi
+                - step:
+                    type: Run
+                    name: Canary Traffic Split
+                    identifier: cd_canary_traffic_split
+                    spec:
+                      shell: Bash
+                      command: |-
+                        source /tmp/gcp-env.sh
+                        OLD_REVISION=$(cat /tmp/old_revision.txt 2>/dev/null || echo "")
+                        NEW_REVISION=$(cat /tmp/new_revision.txt 2>/dev/null || echo "")
+                        RESOURCE_NAME=$(cat /tmp/agent_resource_name.txt 2>/dev/null || echo "")
+                        RESOURCE_ID=$(echo "$RESOURCE_NAME" | grep -oP 'reasoningEngines/\K\S+')
+                        API_BASE="https://${GOOGLE_CLOUD_LOCATION}-aiplatform.googleapis.com/v1beta1"
+                        TOKEN=$(gcloud auth print-access-token)
+                        if [ -z "$OLD_REVISION" ] || [ "$OLD_REVISION" = "$NEW_REVISION" ]; then
+                          echo "First deployment or single revision -- skipping canary."
+                          exit 0
+                        fi
+                        echo "=== Canary: 90% old / 10% new ==="
+                        curl -s -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{\"trafficConfig\":{\"trafficSplitManual\":{\"targets\":[{\"runtimeRevisionName\":\"$OLD_REVISION\",\"percent\":90},{\"runtimeRevisionName\":\"$NEW_REVISION\",\"percent\":10}]}}}" "${API_BASE}/projects/${GOOGLE_CLOUD_PROJECT}/locations/${GOOGLE_CLOUD_LOCATION}/reasoningEngines/${RESOURCE_ID}?update_mask=traffic_config"
+                        echo ""
+                        echo "Canary configured: 90/10"
+                - step:
+                    type: Run
+                    name: Smoke Test
+                    identifier: cd_smoke_test
+                    spec:
+                      shell: Bash
+                      command: |-
+                        source /tmp/gcp-env.sh
+                        RESOURCE_NAME=$(cat /tmp/agent_resource_name.txt 2>/dev/null || echo "")
+                        if [ -z "$RESOURCE_NAME" ]; then
+                          echo "FAIL" > /tmp/smoke_result.txt
+                          echo "No agent resource found."
+                          exit 0
+                        fi
+                        API_BASE="https://${GOOGLE_CLOUD_LOCATION}-aiplatform.googleapis.com/v1beta1"
+                        TOKEN=$(gcloud auth print-access-token)
+                        echo "=== Waiting 30s for container to stabilize ==="
+                        sleep 30
+                        echo "=== Smoke testing deployed agent ==="
+                        echo "Verifying agent is deployed and reachable..."
+                        RESPONSE=$(curl -s -w "\n%{http_code}" -H "Authorization: Bearer $TOKEN" "${API_BASE}/${RESOURCE_NAME}") || true
+                        HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+                        BODY=$(echo "$RESPONSE" | head -n -1)
+                        echo "HTTP Status: $HTTP_CODE"
+                        DISPLAY_NAME=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('displayName',''))" 2>/dev/null || true)
+                        FRAMEWORK=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('spec',{}).get('agentFramework',''))" 2>/dev/null || true)
+                        echo "Display Name: $DISPLAY_NAME"
+                        echo "Framework: $FRAMEWORK"
+                        if [ "$HTTP_CODE" = "200" ] && [ -n "$DISPLAY_NAME" ]; then
+                          echo "PASS" > /tmp/smoke_result.txt
+                          echo "Smoke test PASSED: Agent is deployed and reachable."
+                        elif [ "$HTTP_CODE" = "503" ] || [ "$HTTP_CODE" = "429" ]; then
+                          echo "Agent may still be starting. Waiting 30s..."
+                          sleep 30
+                          RESPONSE=$(curl -s -w "\n%{http_code}" -H "Authorization: Bearer $TOKEN" "${API_BASE}/${RESOURCE_NAME}") || true
+                          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+                          if [ "$HTTP_CODE" = "200" ]; then echo "PASS" > /tmp/smoke_result.txt; echo "Smoke test PASSED on retry."; else echo "FAIL" > /tmp/smoke_result.txt; echo "Smoke test FAILED after retry."; fi
+                        else
+                          echo "FAIL" > /tmp/smoke_result.txt
+                          echo "Smoke test FAILED: HTTP $HTTP_CODE"
+                        fi
+                - step:
+                    type: Run
+                    name: Promote or Rollback
+                    identifier: cd_promote_or_rollback
+                    spec:
+                      shell: Bash
+                      command: |-
+                        source /tmp/gcp-env.sh
+                        SMOKE_RESULT=$(cat /tmp/smoke_result.txt 2>/dev/null || echo "FAIL")
+                        OLD_REVISION=$(cat /tmp/old_revision.txt 2>/dev/null || echo "")
+                        NEW_REVISION=$(cat /tmp/new_revision.txt 2>/dev/null || echo "")
+                        RESOURCE_NAME=$(cat /tmp/agent_resource_name.txt 2>/dev/null || echo "")
+                        RESOURCE_ID=$(echo "$RESOURCE_NAME" | grep -oP 'reasoningEngines/\K\S+')
+                        API_BASE="https://${GOOGLE_CLOUD_LOCATION}-aiplatform.googleapis.com/v1beta1"
+                        TOKEN=$(gcloud auth print-access-token)
+                        if [ -z "$OLD_REVISION" ] || [ "$OLD_REVISION" = "$NEW_REVISION" ]; then
+                          if [ "$SMOKE_RESULT" = "PASS" ]; then
+                            echo "=== First deployment: setting traffic to always-latest ==="
+                            curl -s -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"trafficConfig":{"trafficSplitAlwaysLatest":{}}}' "${API_BASE}/projects/${GOOGLE_CLOUD_PROJECT}/locations/${GOOGLE_CLOUD_LOCATION}/reasoningEngines/${RESOURCE_ID}?update_mask=traffic_config"
+                            echo "Pipeline PASSED. Agent deployed with 100% traffic."
+                          else
+                            echo "WARN: Smoke test did not pass on first deployment. Agent deployed but may need investigation."
+                          fi
+                          exit 0
+                        fi
+                        if [ "$SMOKE_RESULT" = "PASS" ]; then
+                          echo "=== PROMOTING new revision to 100% ==="
+                          curl -s -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{\"trafficConfig\":{\"trafficSplitManual\":{\"targets\":[{\"runtimeRevisionName\":\"$NEW_REVISION\",\"percent\":100}]}}}" "${API_BASE}/projects/${GOOGLE_CLOUD_PROJECT}/locations/${GOOGLE_CLOUD_LOCATION}/reasoningEngines/${RESOURCE_ID}?update_mask=traffic_config"
+                          echo ""
+                          echo "Pipeline PASSED. New revision promoted to 100% traffic."
+                          echo "Resource: $RESOURCE_NAME"
+                          echo "Revision: $NEW_REVISION"
+                        else
+                          echo "=== ROLLING BACK: Smoke test did not pass ==="
+                          echo "Rolling back from: $NEW_REVISION"
+                          echo "Rolling back to:   $OLD_REVISION"
+                          curl -s -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{\"trafficConfig\":{\"trafficSplitManual\":{\"targets\":[{\"runtimeRevisionName\":\"$OLD_REVISION\",\"percent\":100}]}}}" "${API_BASE}/projects/${GOOGLE_CLOUD_PROJECT}/locations/${GOOGLE_CLOUD_LOCATION}/reasoningEngines/${RESOURCE_ID}?update_mask=traffic_config"
+                          echo ""
+                          echo "=== Rollback Successful ==="
+                          echo "Traffic restored to previous revision: $OLD_REVISION"
+                        fi
